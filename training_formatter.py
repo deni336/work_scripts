@@ -53,6 +53,9 @@ def format_envision_export(input_file, output_file):
     df["Status"] = df["Status"].replace("MISSING", "Not Attempted")
     df.loc[df["Due Date"].isna() & (df["Status"] == "Not Attempted"), "Due Date"] = "Not Attempted"
     
+    # Ensure Due Date is properly formatted
+    df.loc[df["Due Date"] != "Not Attempted", "Due Date"] = pd.to_datetime(df["Due Date"], errors="coerce").dt.strftime("%m/%d/%Y")
+    
     df_pivot = df.pivot_table(index=["Name", "Office"], 
                               columns="Course Title", 
                               values="Due Date", 
@@ -71,8 +74,7 @@ def format_envision_export(input_file, output_file):
     percentage_row = ["Percentage Completed", ""]
     for col_idx in range(3, ws.max_column + 1):  # Start at column C
         col_letter = get_column_letter(col_idx)
-
-        # Formula: Count dates greater than today / Total valid dates in the column
+        
         formula = f'=IF(COUNTA({col_letter}3:{col_letter}{ws.max_row+1})=0, "0%", ' \
                   f'TEXT(COUNTIFS({col_letter}3:{col_letter}{ws.max_row+1}, ">"&TODAY()) / ' \
                   f'COUNTIFS({col_letter}3:{col_letter}{ws.max_row+1}, ">*") * 100, "0.00%"))'
@@ -106,6 +108,7 @@ def format_envision_export(input_file, output_file):
     for row in ws.iter_rows(min_row=3, min_col=3):
         for cell in row:
             if isinstance(cell.value, datetime):
+                cell.number_format = "MM/DD/YYYY"  # Ensure date formatting
                 if cell.value.date() < today:
                     cell.fill = red_fill
                 elif today <= cell.value.date() <= thirty_days_out:
