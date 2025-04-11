@@ -1,0 +1,147 @@
+body {
+  font-family: sans-serif;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+h1, h2 {
+  margin: 0.5em;
+}
+
+section {
+  margin: 1em;
+}
+
+.button, button {
+  background: steelblue;
+  color: white;
+  border: none;
+  padding: 0.5em 1em;
+  cursor: pointer;
+}
+
+.button:hover, button:hover {
+  background: #4682b4;
+}
+
+.flashes {
+  list-style: none;
+  padding: 0.5em;
+}
+
+.flashes li {
+  margin: 0.2em 0;
+  padding: 0.5em;
+  border-radius: 4px;
+}
+
+.flashes .success {
+  background: #e0ffe0;
+  border: 1px solid #00a000;
+}
+
+.flashes .error {
+  background: #ffe0e0;
+  border: 1px solid #a00000;
+}
+
+/* Tree-specific styles */
+.node circle {
+  fill: #fff;
+  stroke: steelblue;
+  stroke-width: 3px;
+}
+
+.node text {
+  font: 8px sans-serif;
+  pointer-events: none;
+}
+
+.link {
+  fill: none;
+  stroke: #ccc;
+  stroke-width: 2px;
+}
+
+/* Split screen */
+#split-container {
+  display: flex;
+  height: 100vh;    /* fill viewport */
+  overflow: hidden;
+}
+
+#tree-container {
+  flex: 1;
+  overflow: hidden;   /* hide both scrollbars */
+  margin: 2px;
+  background: #ffffff;
+}
+
+/* DETAILS PANE: make it a column flexbox */
+#details-container {
+  display: flex;
+  flex-direction: column;
+  flex: 1;               /* exactly 50% alongside tree-container */
+  height: 100%;          /* fill container height */
+  padding: 0.125em;
+  border-left: 2px solid #000000;
+  margin: 1px;
+  background: #aedbff;
+  overflow: hidden;      /* prevent outer scroll */
+}
+
+/* Keep titles, chart, filters at natural height */
+.section-title,
+.mc-rate,
+.chart-wrapper,
+#filters-container {
+  flex: 0 0 auto;
+}
+
+/* Make only the table area scrollable */
+#aircraft-table {
+  flex: 1 1 auto;
+  overflow: auto;
+}
+
+/* Aircraft table styling */
+#aircraft-table table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1em;
+}
+#aircraft-table th, #aircraft-table td {
+  border: 1px solid #999;
+  padding: 0.125em;
+  font-size: 0.8em;
+}
+#aircraft-table th {
+  background: #eee;
+}
+
+.chart-row {
+  display: flex;
+  gap: 1em;
+  justify-content: space-between;
+}
+
+.chart-wrapper {
+  flex: 1;
+}
+
+#fmcChart, #nmcChart {
+  width: 100% !important;
+  height: 200px !important;
+  margin-top: 1em;
+  margin-bottom: 1em;
+}
+
+
+.mc-rate {
+  font-size: 2em;
+  font-weight: bold;
+  text-align: center;
+  margin-bottom: 1em;
+  color: #00308F;
+}

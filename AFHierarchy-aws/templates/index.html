@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Org Tree Builder</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <h1>Organizational Tree Builder</h1>
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <ul class="flashes">
+        {% for category, msg in messages %}
+          <li class="{{ category }}">{{ msg }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  {% endwith %}
+
+  <section>
+    <h2>1. Upload Org CSV</h2>
+    <form action="{{ url_for('upload_csv') }}" method="post" enctype="multipart/form-data">
+      <input type="file" name="csv_file" accept=".csv" required>
+      <button type="submit">Upload & Load to DB</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>2. Upload Aircraft CSV</h2>
+    <form action="{{ url_for('upload_aircraft') }}" method="post" enctype="multipart/form-data">
+      <input type="file" name="aircraft_file" accept=".csv" required>
+      <button type="submit">Upload Aircraft Data</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>3. Build JSON</h2>
+    <form action="{{ url_for('build_json') }}" method="post">
+      <button type="submit">Build JSON Tree</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>4. View Tree</h2>
+    <a href="{{ url_for('tree') }}" class="button">View Organizational Tree</a>
+  </section>
+</body>
+</html>

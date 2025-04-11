@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Org Tree with Filters</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <div id="split-container">
+    <!-- Left: Tree -->
+    <div id="tree-container"></div>
+
+    <!-- Right: Details Pane -->
+    <div id="details-container">
+      <!-- Mission Capable Rate -->
+      <h3 id="mcTitle" class="section-title">Mission Capable Rate</h3>
+      <div id="mcRate" class="mc-rate">--%</div>
+
+      <!-- Aircraft Status & NMC Breakdown Pie Charts Side-by-Side -->
+    <div class="chart-row">
+      <div class="chart-wrapper">
+        <canvas id="fmcChart"></canvas>
+      </div>
+      <div class="chart-wrapper">
+        <canvas id="nmcChart"></canvas>
+      </div>
+    </div>
+
+      <!-- Filters -->
+      <div id="filters-container">
+        <h4 class="section-title">Filters</h4>
+        <div class="filter">
+          <label>MDS:
+            <select id="mdsFilter"><option value="">All</option></select>
+          </label>
+        </div>
+        <div class="filter">
+          <label>Base:
+            <select id="baseFilter"><option value="">All</option></select>
+          </label>
+        </div>
+        <div class="filter">
+          <label>Status:
+            <select id="statusFilter"><option value="">All</option></select>
+          </label>
+        </div>
+      </div>
+
+      <!-- Aircraft Table -->
+      <h3 class="section-title">Aircraft Details</h3>
+      <div id="aircraft-table">Click a node to load aircraft…</div>
+    </div>
+  </div>
+
+  <!-- Dependencies -->
+  <script src="https://d3js.org/d3.v5.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- App logic -->
+  <script src="{{ url_for('static', filename='js/tree.js') }}"></script>
+</body>
+</html>
