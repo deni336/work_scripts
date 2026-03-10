@@ -13,6 +13,10 @@ FILE_PATH = Path("digital_U/Digital U_USAF Completion Data.csv")
 CUSTOMER_NAME = "CUSTOMERNAME"  # Update before running
 FILE_FORMAT = "CSV"  # Supported: CSV or PIPE
 
+NULL_PLACEHOLDER = "N/A"
+ENFORCE_ROW_COUNT_MATCH = True
+VERIFY_WRITTEN_ROW_COUNT = True
+
 BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = BASE_DIR / "exports"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -76,24 +80,63 @@ def format_timestamp(series: pd.Series) -> pd.Series:
     return formatted.where(timestamps.notna(), pd.NA)
 
 
-def validate_required_columns(
+def normalize_empty_values(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    for column in out.columns:
+        if pd.api.types.is_object_dtype(out[column]) or pd.api.types.is_string_dtype(
+            out[column]
+        ):
+            as_text = out[column].astype("string").str.strip()
+            out[column] = as_text.replace("", pd.NA)
+    return out
+
+
+def fill_required_with_placeholder(
     df: pd.DataFrame,
     required_columns: list[str],
+    placeholder: str,
 ) -> pd.DataFrame:
-    valid_mask = pd.Series(True, index=df.index)
-
+    out = df.copy()
     for column in required_columns:
-        column_mask = df[column].notna() & df[column].astype(str).str.strip().ne("")
-        valid_mask &= column_mask
+        missing_mask = out[column].isna() | out[column].astype(str).str.strip().eq("")
+        missing_count = int(missing_mask.sum())
+        if missing_count:
+            print(
+                f"[WARN] Column {column} had {missing_count:,} missing value(s); "
+                f"filled with {placeholder}."
+            )
+            out.loc[missing_mask, column] = placeholder
+    return out
 
-    invalid_count = int((~valid_mask).sum())
-    if invalid_count:
+
+def fill_all_missing_with_placeholder(df: pd.DataFrame, placeholder: str) -> pd.DataFrame:
+    out = df.copy()
+    missing_total = int(out.isna().sum().sum())
+    if missing_total:
         print(
-            f"[WARN] Dropping {invalid_count} row(s) with missing required values: "
-            f"{required_columns}"
+            f"[INFO] Filling {missing_total:,} remaining missing cell(s) with {placeholder}."
+        )
+    return out.fillna(placeholder)
+
+
+def assert_row_count(stage: str, expected_rows: int, actual_rows: int) -> None:
+    print(f"[CHECK] {stage}: expected {expected_rows:,}, actual {actual_rows:,}")
+    if ENFORCE_ROW_COUNT_MATCH and expected_rows != actual_rows:
+        raise ValueError(
+            f"Row-count mismatch at {stage}. Expected {expected_rows:,} rows but got "
+            f"{actual_rows:,}."
         )
 
-    return df.loc[valid_mask].copy()
+
+def verify_written_rows(output_path: Path, delimiter: str, expected_rows: int) -> None:
+    written = pd.read_csv(
+        output_path,
+        sep=delimiter,
+        dtype=str,
+        keep_default_na=False,
+        low_memory=False,
+    )
+    assert_row_count("Written file rows", expected_rows, len(written))
 
 
 def convert_to_attendance(df: pd.DataFrame) -> pd.DataFrame:
@@ -113,7 +156,9 @@ def convert_to_attendance(df: pd.DataFrame) -> pd.DataFrame:
     out["PROVIDER"] = get_first_present_column(df, SOURCE_CANDIDATES["PROVIDER"])
 
     completion_source = get_first_present_column(df, SOURCE_CANDIDATES["COMPLETION_DATE"])
-    completed_mask = completion_source.notna() & completion_source.astype(str).str.strip().ne("")
+    completed_mask = completion_source.notna() & completion_source.astype(str).str.strip().ne(
+        ""
+    )
     out["STATUS"] = completed_mask.map({True: "COMPLETED", False: "STARTED"})
     out["COMPLETION_DATE"] = format_timestamp(completion_source)
 
@@ -129,9 +174,7 @@ def convert_to_attendance(df: pd.DataFrame) -> pd.DataFrame:
         if column not in out.columns:
             out[column] = pd.NA
 
-    attendance = out[TARGET_COLUMNS].drop_duplicates()
-    attendance = validate_required_columns(attendance, REQUIRED_COLUMNS)
-    return attendance
+    return out[TARGET_COLUMNS]
 
 
 def delimiter_for_format(file_format: str) -> str:
@@ -152,15 +195,18 @@ def build_output_filename(customer_name: str) -> str:
 def main() -> None:
     print(f"[INFO] Reading source file: {FILE_PATH}")
     source = pd.read_csv(FILE_PATH, low_memory=False)
-    print(f"[INFO] Source rows: {len(source):,}")
+    input_rows = len(source)
+    print(f"[INFO] Source rows: {input_rows:,}")
 
     attendance = convert_to_attendance(source)
-    print(f"[INFO] Output rows after validation: {len(attendance):,}")
+    attendance = normalize_empty_values(attendance)
+    attendance = fill_required_with_placeholder(
+        attendance, REQUIRED_COLUMNS, NULL_PLACEHOLDER
+    )
+    attendance = fill_all_missing_with_placeholder(attendance, NULL_PLACEHOLDER)
 
-    if attendance.empty:
-        raise ValueError(
-            "No valid attendance rows were produced after required-field checks."
-        )
+    transformed_rows = len(attendance)
+    assert_row_count("Transformed rows", input_rows, transformed_rows)
 
     output_name = build_output_filename(CUSTOMER_NAME)
     output_path = OUTPUT_DIR / output_name
@@ -173,7 +219,11 @@ def main() -> None:
         encoding="utf-8",
     )
 
+    if VERIFY_WRITTEN_ROW_COUNT:
+        verify_written_rows(output_path, delimiter, transformed_rows)
+
     print(f"[DONE] Wrote attendance import: {output_path}")
+    print(f"[DONE] Rows: {transformed_rows:,}")
     print(f"[DONE] Columns: {attendance.columns.tolist()}")
 
 

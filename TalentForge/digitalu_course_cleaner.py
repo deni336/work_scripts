@@ -14,6 +14,10 @@ CUSTOMER_NAME = "CUSTOMERNAME"  # Update before running
 FILE_FORMAT = "CSV"  # Supported: CSV or PIPE
 PROVIDER_NAME = "DigitalU"  # Set to None to use provider from source columns
 
+NULL_PLACEHOLDER = "N/A"
+ENFORCE_ROW_COUNT_MATCH = True
+VERIFY_WRITTEN_ROW_COUNT = True
+
 BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = BASE_DIR / "exports"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -56,15 +60,6 @@ REQUIRED_COLUMNS = [
     "STATUS",
     "PROVIDER",
 ]
-
-LIST_COLUMNS = {
-    "SKILL": "|",
-    "SENIORITY_LIST": ",",
-    "BUSINESS_UNIT_LIST": ",",
-    "JOB_FUNCTION_LIST": ",",
-    "JOB_CODE_LIST": ",",
-    "SKILL_PROFICIENCY_LIST": ",",
-}
 
 SOURCE_CANDIDATES = {
     "COURSE_ID": ["Courses - Vendor Course Id", "COURSE_ID"],
@@ -129,7 +124,7 @@ def normalize_status(series: pd.Series) -> pd.Series:
     status = series.fillna("").astype(str).str.strip().str.upper()
     status = status.replace(
         {
-            "": "ACTIVE",
+            "": pd.NA,
             "COMPLETED": "ACTIVE",
             "STARTED": "ACTIVE",
             "LIVE": "ACTIVE",
@@ -147,7 +142,7 @@ def normalize_list(
     output_delimiter: str,
     split_pattern: str = r"[|,;]",
 ) -> pd.Series:
-    """Normalize multi-value text into a deduplicated delimiter-separated list."""
+    """Normalize multi-value text into delimiter-separated list values."""
     normalized: list[object] = []
 
     for value in series.fillna("").astype(str):
@@ -168,51 +163,66 @@ def format_timestamp(series: pd.Series) -> pd.Series:
     return formatted.where(timestamps.notna(), pd.NA)
 
 
-def first_non_empty(series: pd.Series) -> object:
-    """Select the first non-empty value in a group."""
-    for value in series:
-        if pd.isna(value):
-            continue
-        as_text = str(value).strip()
-        if as_text:
-            return value
-    return pd.NA
+def normalize_empty_values(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert empty strings and whitespace-only values to NA."""
+    out = df.copy()
+    for column in out.columns:
+        if pd.api.types.is_object_dtype(out[column]) or pd.api.types.is_string_dtype(
+            out[column]
+        ):
+            as_text = out[column].astype("string").str.strip()
+            out[column] = as_text.replace("", pd.NA)
+    return out
 
 
-def merge_list_values(series: pd.Series, delimiter: str) -> object:
-    """Merge list-like values in a group while preserving order."""
-    merged: list[str] = []
-
-    for value in series:
-        if pd.isna(value):
-            continue
-        for token in str(value).split(delimiter):
-            cleaned = token.strip()
-            if cleaned and cleaned not in merged:
-                merged.append(cleaned)
-
-    return delimiter.join(merged) if merged else pd.NA
-
-
-def validate_required_columns(
+def fill_required_with_placeholder(
     df: pd.DataFrame,
     required_columns: list[str],
+    placeholder: str,
 ) -> pd.DataFrame:
-    """Drop rows that are missing required schema fields."""
-    valid_mask = pd.Series(True, index=df.index)
-
+    """Ensure required fields are present by filling gaps with placeholder."""
+    out = df.copy()
     for column in required_columns:
-        column_mask = df[column].notna() & df[column].astype(str).str.strip().ne("")
-        valid_mask &= column_mask
+        missing_mask = out[column].isna() | out[column].astype(str).str.strip().eq("")
+        missing_count = int(missing_mask.sum())
+        if missing_count:
+            print(
+                f"[WARN] Column {column} had {missing_count:,} missing value(s); "
+                f"filled with {placeholder}."
+            )
+            out.loc[missing_mask, column] = placeholder
+    return out
 
-    invalid_count = int((~valid_mask).sum())
-    if invalid_count:
+
+def fill_all_missing_with_placeholder(df: pd.DataFrame, placeholder: str) -> pd.DataFrame:
+    out = df.copy()
+    missing_total = int(out.isna().sum().sum())
+    if missing_total:
         print(
-            f"[WARN] Dropping {invalid_count} row(s) with missing required values: "
-            f"{required_columns}"
+            f"[INFO] Filling {missing_total:,} remaining missing cell(s) with {placeholder}."
+        )
+    return out.fillna(placeholder)
+
+
+def assert_row_count(stage: str, expected_rows: int, actual_rows: int) -> None:
+    print(f"[CHECK] {stage}: expected {expected_rows:,}, actual {actual_rows:,}")
+    if ENFORCE_ROW_COUNT_MATCH and expected_rows != actual_rows:
+        raise ValueError(
+            f"Row-count mismatch at {stage}. Expected {expected_rows:,} rows but got "
+            f"{actual_rows:,}."
         )
 
-    return df.loc[valid_mask].copy()
+
+def verify_written_rows(output_path: Path, delimiter: str, expected_rows: int) -> None:
+    """Re-read output file to guarantee row count written to disk."""
+    written = pd.read_csv(
+        output_path,
+        sep=delimiter,
+        dtype=str,
+        keep_default_na=False,
+        low_memory=False,
+    )
+    assert_row_count("Written file rows", expected_rows, len(written))
 
 
 def convert_to_course_catalog(df: pd.DataFrame) -> pd.DataFrame:
@@ -300,29 +310,7 @@ def convert_to_course_catalog(df: pd.DataFrame) -> pd.DataFrame:
         if column not in out.columns:
             out[column] = pd.NA
 
-    aggregation_map: dict[str, object] = {}
-    for column in TARGET_COLUMNS:
-        if column == "COURSE_ID":
-            continue
-        if column in LIST_COLUMNS:
-            delimiter = LIST_COLUMNS[column]
-            aggregation_map[column] = (
-                lambda values, delim=delimiter: merge_list_values(values, delim)
-            )
-        else:
-            aggregation_map[column] = first_non_empty
-
-    aggregated = (
-        out[TARGET_COLUMNS]
-        .groupby("COURSE_ID", dropna=False, as_index=False)
-        .agg(aggregation_map)
-    )
-
-    aggregated["STATUS"] = normalize_status(aggregated["STATUS"])
-    aggregated["PUBLISHED_TS"] = format_timestamp(aggregated["PUBLISHED_TS"])
-    aggregated = validate_required_columns(aggregated, REQUIRED_COLUMNS)
-
-    return aggregated[TARGET_COLUMNS]
+    return out[TARGET_COLUMNS]
 
 
 def delimiter_for_format(file_format: str) -> str:
@@ -343,13 +331,16 @@ def build_output_filename(customer_name: str) -> str:
 def main() -> None:
     print(f"[INFO] Reading source file: {FILE_PATH}")
     source = pd.read_csv(FILE_PATH, low_memory=False)
-    print(f"[INFO] Source rows: {len(source):,}")
+    input_rows = len(source)
+    print(f"[INFO] Source rows: {input_rows:,}")
 
     courses = convert_to_course_catalog(source)
-    print(f"[INFO] Output rows after validation: {len(courses):,}")
+    courses = normalize_empty_values(courses)
+    courses = fill_required_with_placeholder(courses, REQUIRED_COLUMNS, NULL_PLACEHOLDER)
+    courses = fill_all_missing_with_placeholder(courses, NULL_PLACEHOLDER)
 
-    if courses.empty:
-        raise ValueError("No valid course rows were produced after required-field checks.")
+    transformed_rows = len(courses)
+    assert_row_count("Transformed rows", input_rows, transformed_rows)
 
     output_name = build_output_filename(CUSTOMER_NAME)
     output_path = OUTPUT_DIR / output_name
@@ -362,7 +353,11 @@ def main() -> None:
         encoding="utf-8",
     )
 
+    if VERIFY_WRITTEN_ROW_COUNT:
+        verify_written_rows(output_path, delimiter, transformed_rows)
+
     print(f"[DONE] Wrote course catalog import: {output_path}")
+    print(f"[DONE] Rows: {transformed_rows:,}")
     print(f"[DONE] Columns: {courses.columns.tolist()}")
 
 
