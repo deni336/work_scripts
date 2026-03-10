@@ -201,7 +201,19 @@ def fill_all_missing_with_placeholder(df: pd.DataFrame, placeholder: str) -> pd.
         print(
             f"[INFO] Filling {missing_total:,} remaining missing cell(s) with {placeholder}."
         )
-    return out.fillna(placeholder)
+
+    for column in out.columns:
+        missing_mask = out[column].isna()
+        if not missing_mask.any():
+            continue
+        # Nullable numeric dtypes (e.g., Int64/Float64) reject string assignment.
+        if pd.api.types.is_numeric_dtype(out[column]) or pd.api.types.is_bool_dtype(
+            out[column]
+        ):
+            out[column] = out[column].astype("object")
+        out.loc[missing_mask, column] = placeholder
+
+    return out
 
 
 def assert_row_count(stage: str, expected_rows: int, actual_rows: int) -> None:
