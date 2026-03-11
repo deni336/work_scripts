@@ -17,6 +17,7 @@ PROVIDER_NAME = "DigitalU"  # Set to None to use provider from source columns
 NULL_PLACEHOLDER = "N/A"
 ENFORCE_ROW_COUNT_MATCH = True
 VERIFY_WRITTEN_ROW_COUNT = True
+MAX_ROWS_PER_FILE = 26_995
 
 BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = BASE_DIR / "exports"
@@ -194,28 +195,6 @@ def fill_required_with_placeholder(
     return out
 
 
-def fill_all_missing_with_placeholder(df: pd.DataFrame, placeholder: str) -> pd.DataFrame:
-    out = df.copy()
-    missing_total = int(out.isna().sum().sum())
-    if missing_total:
-        print(
-            f"[INFO] Filling {missing_total:,} remaining missing cell(s) with {placeholder}."
-        )
-
-    for column in out.columns:
-        missing_mask = out[column].isna()
-        if not missing_mask.any():
-            continue
-        # Nullable numeric dtypes (e.g., Int64/Float64) reject string assignment.
-        if pd.api.types.is_numeric_dtype(out[column]) or pd.api.types.is_bool_dtype(
-            out[column]
-        ):
-            out[column] = out[column].astype("object")
-        out.loc[missing_mask, column] = placeholder
-
-    return out
-
-
 def assert_row_count(stage: str, expected_rows: int, actual_rows: int) -> None:
     print(f"[CHECK] {stage}: expected {expected_rows:,}, actual {actual_rows:,}")
     if ENFORCE_ROW_COUNT_MATCH and expected_rows != actual_rows:
@@ -225,16 +204,31 @@ def assert_row_count(stage: str, expected_rows: int, actual_rows: int) -> None:
         )
 
 
-def verify_written_rows(output_path: Path, delimiter: str, expected_rows: int) -> None:
-    """Re-read output file to guarantee row count written to disk."""
-    written = pd.read_csv(
-        output_path,
-        sep=delimiter,
-        dtype=str,
-        keep_default_na=False,
-        low_memory=False,
-    )
-    assert_row_count("Written file rows", expected_rows, len(written))
+def verify_written_rows(
+    output_paths: list[Path],
+    delimiter: str,
+    expected_rows: int,
+    max_rows_per_file: int,
+) -> None:
+    """Re-read output files to guarantee row counts written to disk."""
+    total_written = 0
+    for output_path in output_paths:
+        written = pd.read_csv(
+            output_path,
+            sep=delimiter,
+            dtype=str,
+            keep_default_na=False,
+            low_memory=False,
+        )
+        rows_in_file = len(written)
+        if rows_in_file > max_rows_per_file:
+            raise ValueError(
+                f"Batch file {output_path.name} has {rows_in_file:,} rows, which exceeds "
+                f"the configured limit of {max_rows_per_file:,}."
+            )
+        total_written += rows_in_file
+
+    assert_row_count("Written file rows (all batches)", expected_rows, total_written)
 
 
 def convert_to_course_catalog(df: pd.DataFrame) -> pd.DataFrame:
@@ -334,10 +328,53 @@ def delimiter_for_format(file_format: str) -> str:
     raise ValueError("FILE_FORMAT must be either 'CSV' or 'PIPE'.")
 
 
-def build_output_filename(customer_name: str) -> str:
+def build_output_stem(customer_name: str) -> str:
     date_part = datetime.now().strftime("%Y%m%d")
     clean_customer = customer_name.strip().upper()
-    return f"{clean_customer}_COURSE_CATELOG_IMPORT_{date_part}.csv"
+    return f"{clean_customer}_COURSE_CATELOG_IMPORT_{date_part}"
+
+
+def write_batched_output(
+    df: pd.DataFrame,
+    output_stem: str,
+    output_dir: Path,
+    delimiter: str,
+    max_rows_per_file: int,
+) -> list[Path]:
+    output_paths: list[Path] = []
+    total_rows = len(df)
+    total_batches = max(1, (total_rows + max_rows_per_file - 1) // max_rows_per_file)
+
+    for batch_index in range(total_batches):
+        start_row = batch_index * max_rows_per_file
+        end_row = start_row + max_rows_per_file
+        batch = df.iloc[start_row:end_row]
+
+        if total_batches == 1:
+            filename = f"{output_stem}.csv"
+        else:
+            filename = f"{output_stem}_PART_{batch_index + 1:03d}.csv"
+
+        output_path = output_dir / filename
+        batch.to_csv(
+            output_path,
+            sep=delimiter,
+            index=False,
+            encoding="utf-8",
+        )
+
+        rows_in_batch = len(batch)
+        if rows_in_batch > max_rows_per_file:
+            raise ValueError(
+                f"Batch file {filename} has {rows_in_batch:,} rows, which exceeds "
+                f"{max_rows_per_file:,}."
+            )
+
+        output_paths.append(output_path)
+        print(f"[DONE] Wrote batch {batch_index + 1}/{total_batches}: {output_path}")
+        print(f"[DONE] Batch rows: {rows_in_batch:,}")
+
+    return output_paths
 
 
 def main() -> None:
@@ -349,26 +386,30 @@ def main() -> None:
     courses = convert_to_course_catalog(source)
     courses = normalize_empty_values(courses)
     courses = fill_required_with_placeholder(courses, REQUIRED_COLUMNS, NULL_PLACEHOLDER)
-    courses = fill_all_missing_with_placeholder(courses, NULL_PLACEHOLDER)
 
     transformed_rows = len(courses)
     assert_row_count("Transformed rows", input_rows, transformed_rows)
 
-    output_name = build_output_filename(CUSTOMER_NAME)
-    output_path = OUTPUT_DIR / output_name
+    output_stem = build_output_stem(CUSTOMER_NAME)
     delimiter = delimiter_for_format(FILE_FORMAT)
 
-    courses.to_csv(
-        output_path,
-        sep=delimiter,
-        index=False,
-        encoding="utf-8",
+    output_paths = write_batched_output(
+        courses,
+        output_stem=output_stem,
+        output_dir=OUTPUT_DIR,
+        delimiter=delimiter,
+        max_rows_per_file=MAX_ROWS_PER_FILE,
     )
 
     if VERIFY_WRITTEN_ROW_COUNT:
-        verify_written_rows(output_path, delimiter, transformed_rows)
+        verify_written_rows(
+            output_paths,
+            delimiter=delimiter,
+            expected_rows=transformed_rows,
+            max_rows_per_file=MAX_ROWS_PER_FILE,
+        )
 
-    print(f"[DONE] Wrote course catalog import: {output_path}")
+    print(f"[DONE] Wrote course catalog import files: {len(output_paths)}")
     print(f"[DONE] Rows: {transformed_rows:,}")
     print(f"[DONE] Columns: {courses.columns.tolist()}")
 
