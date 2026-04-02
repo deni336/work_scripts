@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 import re
+from html import unescape
 
 import pandas as pd
 
@@ -51,6 +52,18 @@ SOURCE_CANDIDATES = {
         "Transcript Courses - Completed At",
         "COMPLETION_DATE",
     ],
+    "STARTED_AT": [
+        "Transcript Courses - Started At",
+        "Transcript Courses - StartedAt",
+        "Transcript Courses - Started",
+        "STARTED_AT",
+    ],
+    "STOPPED_AT": [
+        "Transcript Courses - Stopped At",
+        "Transcript Courses - StoppedAt",
+        "Transcript Courses - Stopped",
+        "STOPPED_AT",
+    ],
     "DURATION_MINUTES": ["Courses - Duration In Minutes", "DURATION_MINUTES"],
 }
 
@@ -72,13 +85,63 @@ def strip_html(series: pd.Series) -> pd.Series:
     text = series.fillna("").astype(str)
     text = text.str.replace(_HTML_RE, "", regex=True)
     text = text.str.replace(r"\s+", " ", regex=True).str.strip()
+    # Unescape HTML entities (e.g. &rsquo;, &#8217;)
+    text = text.map(lambda s: unescape(s) if s and isinstance(s, str) else s)
     return text.replace("", pd.NA)
 
 
 def format_timestamp(series: pd.Series) -> pd.Series:
-    timestamps = pd.to_datetime(series, errors="coerce")
-    formatted = timestamps.dt.strftime("%Y-%m-%dT%H:%M:%S")
-    return formatted.where(timestamps.notna(), pd.NA)
+    s = series.fillna("").astype(str).str.strip()
+
+    # Try parsing numeric unix epoch seconds first (common in some dumps)
+    is_unix = s.str.match(r"^\d{9,}$")
+    parsed = pd.Series(pd.NaT, index=s.index)
+    if is_unix.any():
+        try:
+            parsed.loc[is_unix] = pd.to_datetime(s[is_unix].astype('int64'), unit='s', errors='coerce')
+        except Exception:
+            parsed.loc[is_unix] = pd.to_datetime(s[is_unix], errors='coerce')
+
+    # Parse remaining values with flexible parser
+    remaining = ~is_unix
+    if remaining.any():
+        parsed.loc[remaining] = pd.to_datetime(s[remaining], errors='coerce')
+
+    formatted = parsed.dt.strftime("%Y-%m-%dT%H:%M:%S")
+    return formatted.where(parsed.notna(), pd.NA)
+
+
+def parse_duration_minutes(series: pd.Series) -> pd.Series:
+    """Return duration in minutes (float). Handles numeric minutes or mm:ss / hh:mm:ss strings."""
+    def _parse(val):
+        if pd.isna(val):
+            return pd.NA
+        s = str(val).strip()
+        if s == "":
+            return pd.NA
+        # If already numeric (minutes)
+        try:
+            return float(s)
+        except Exception:
+            pass
+
+        # mm:ss or hh:mm:ss
+        if ":" in s:
+            parts = [p for p in s.split(":") if p != ""]
+            try:
+                parts = [float(p) for p in parts]
+            except Exception:
+                return pd.NA
+            # seconds only last part
+            if len(parts) == 2:
+                minutes, seconds = parts
+                return minutes + seconds / 60.0
+            if len(parts) == 3:
+                hours, minutes, seconds = parts
+                return hours * 60.0 + minutes + seconds / 60.0
+        return pd.NA
+
+    return series.map(_parse)
 
 
 def normalize_empty_values(df: pd.DataFrame) -> pd.DataFrame:
@@ -161,20 +224,22 @@ def convert_to_attendance(df: pd.DataFrame) -> pd.DataFrame:
     )
     out["PROVIDER"] = get_first_present_column(df, SOURCE_CANDIDATES["PROVIDER"])
 
+    # Timestamps: prefer explicit completion, otherwise stopped, otherwise blank.
     completion_source = get_first_present_column(df, SOURCE_CANDIDATES["COMPLETION_DATE"])
-    completed_mask = completion_source.notna() & completion_source.astype(str).str.strip().ne(
-        ""
-    )
-    out["STATUS"] = completed_mask.map({True: "COMPLETED", False: "STARTED"})
-    out["COMPLETION_DATE"] = format_timestamp(completion_source)
+    started_source = get_first_present_column(df, SOURCE_CANDIDATES["STARTED_AT"])
+    stopped_source = get_first_present_column(df, SOURCE_CANDIDATES["STOPPED_AT"])
 
-    out["DURATION_HOURS"] = (
-        pd.to_numeric(
-            get_first_present_column(df, SOURCE_CANDIDATES["DURATION_MINUTES"]),
-            errors="coerce",
-        )
-        / 60
-    )
+    chosen_completion = completion_source.fillna("")
+    fallback_mask = chosen_completion.astype(str).str.strip().eq("")
+    chosen_completion.loc[fallback_mask] = stopped_source.loc[fallback_mask].fillna("")
+
+    completed_mask = chosen_completion.astype(str).str.strip().ne("")
+    out["STATUS"] = completed_mask.map({True: "COMPLETED", False: "STARTED"})
+    out["COMPLETION_DATE"] = format_timestamp(chosen_completion)
+
+    duration_raw = get_first_present_column(df, SOURCE_CANDIDATES["DURATION_MINUTES"])
+    duration_minutes = parse_duration_minutes(duration_raw)
+    out["DURATION_HOURS"] = pd.to_numeric(duration_minutes, errors="coerce") / 60
 
     for column in TARGET_COLUMNS:
         if column not in out.columns:
