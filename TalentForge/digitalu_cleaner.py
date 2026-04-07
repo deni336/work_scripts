@@ -36,7 +36,6 @@ TARGET_COLUMNS = [
 ]
 
 REQUIRED_COLUMNS = [
-    "EMPLOYEE_ID",
     "COURSE_ID",
     "STATUS",
 ]
@@ -171,6 +170,17 @@ def fill_required_with_placeholder(
             )
             out.loc[missing_mask, column] = placeholder
     return out
+
+
+def drop_rows_missing_employee_id(df: pd.DataFrame) -> pd.DataFrame:
+    missing_mask = df["EMPLOYEE_ID"].isna() | df["EMPLOYEE_ID"].astype(str).str.strip().eq("")
+    missing_count = int(missing_mask.sum())
+    if missing_count:
+        print(
+            f"[INFO] Dropping {missing_count:,} row(s) with missing EMPLOYEE_ID/DODID."
+        )
+        return df.loc[~missing_mask].copy()
+    return df
 
 
 def assert_row_count(stage: str, expected_rows: int, actual_rows: int) -> None:
@@ -314,12 +324,15 @@ def main() -> None:
 
     attendance = convert_to_attendance(source)
     attendance = normalize_empty_values(attendance)
+    attendance = drop_rows_missing_employee_id(attendance)
     attendance = fill_required_with_placeholder(
         attendance, REQUIRED_COLUMNS, NULL_PLACEHOLDER
     )
 
     transformed_rows = len(attendance)
-    assert_row_count("Transformed rows", input_rows, transformed_rows)
+    dropped_rows = input_rows - transformed_rows
+    print(f"[INFO] Transformed rows: {transformed_rows:,}")
+    print(f"[INFO] Dropped rows missing EMPLOYEE_ID/DODID: {dropped_rows:,}")
 
     output_stem = build_output_stem(CUSTOMER_NAME)
     delimiter = delimiter_for_format(FILE_FORMAT)
